@@ -1,31 +1,35 @@
 ---
 name: tinyfish
-description: Use TinyFish/Mino web agent to extract/scrape websites, extract data, and automate browser actions using natural language. Use when you need to extract/scrape data from websites, handle bot-protected sites, or automate web tasks.
+description: Use TinyFish web agent to extract/scrape websites, extract data, and automate browser actions using natural language. Use when you need to extract/scrape data from websites, handle bot-protected sites, or automate web tasks.
+homepage: https://agent.tinyfish.ai
+requires:
+  env:
+    - TINYFISH_API_KEY
 ---
 
 # TinyFish Web Agent
 
-Requires: `MINO_API_KEY` environment variable
+Requires: `TINYFISH_API_KEY` environment variable
 
 ## Pre-flight Check (REQUIRED)
 
 Before making any API call, **always** run this first to verify the key is available:
 
 ```bash
-[ -n "$MINO_API_KEY" ] && echo "MINO_API_KEY is set" || echo "MINO_API_KEY is NOT set"
+[ -n "$TINYFISH_API_KEY" ] && echo "TINYFISH_API_KEY is set" || echo "TINYFISH_API_KEY is NOT set"
 ```
 
-If the key is **not set**, you **MUST stop and ask the user** to add their API key. Do **NOT** fall back to other tools or approaches — the task requires TinyFish/Mino.
+If the key is **not set**, you **MUST stop and ask the user** to add their API key. Do **NOT** fall back to other tools or approaches — the task requires TinyFish.
 
 Tell the user:
 
-> You need a Mino API key. Get one at: <https://agent.tinyfish.ai/api-keys>
+> You need a TinyFish API key. Get one at: <https://agent.tinyfish.ai/api-keys>
 >
 > Then set it so the agent can use it:
 >
 > **Option 1 — Environment variable (works everywhere):**
 > ```bash
-> export MINO_API_KEY="your-key-here"
+> export TINYFISH_API_KEY="your-key-here"
 > ```
 >
 > **Option 2 — Claude Code settings (Claude Code only):**
@@ -33,7 +37,7 @@ Tell the user:
 > ```json
 > {
 >   "env": {
->     "MINO_API_KEY": "your-key-here"
+>     "TINYFISH_API_KEY": "your-key-here"
 >   }
 > }
 > ```
@@ -51,7 +55,7 @@ Extract data from a page. Specify the JSON structure you want:
 
 ```bash
 curl -N -s -X POST "https://agent.tinyfish.ai/v1/automation/run-sse" \
-  -H "X-API-Key: $MINO_API_KEY" \
+  -H "X-API-Key: $TINYFISH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://example.com",
@@ -65,7 +69,7 @@ Extract lists of data with explicit structure:
 
 ```bash
 curl -N -s -X POST "https://agent.tinyfish.ai/v1/automation/run-sse" \
-  -H "X-API-Key: $MINO_API_KEY" \
+  -H "X-API-Key: $TINYFISH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://example.com/products",
@@ -79,7 +83,7 @@ For bot-protected sites, add `"browser_profile": "stealth"` to the request body:
 
 ```bash
 curl -N -s -X POST "https://agent.tinyfish.ai/v1/automation/run-sse" \
-  -H "X-API-Key: $MINO_API_KEY" \
+  -H "X-API-Key: $TINYFISH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://protected-site.com",
@@ -94,7 +98,7 @@ Route through a specific country by adding `"proxy_config"` to the body:
 
 ```bash
 curl -N -s -X POST "https://agent.tinyfish.ai/v1/automation/run-sse" \
-  -H "X-API-Key: $MINO_API_KEY" \
+  -H "X-API-Key: $TINYFISH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://geo-restricted-site.com",
@@ -116,7 +120,7 @@ When extracting from multiple independent sources, make separate parallel curl c
 ```bash
 # Compare pizza prices - run these simultaneously
 curl -N -s -X POST "https://agent.tinyfish.ai/v1/automation/run-sse" \
-  -H "X-API-Key: $MINO_API_KEY" \
+  -H "X-API-Key: $TINYFISH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://pizzahut.com",
@@ -124,7 +128,7 @@ curl -N -s -X POST "https://agent.tinyfish.ai/v1/automation/run-sse" \
   }'
 
 curl -N -s -X POST "https://agent.tinyfish.ai/v1/automation/run-sse" \
-  -H "X-API-Key: $MINO_API_KEY" \
+  -H "X-API-Key: $TINYFISH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://dominos.com",
@@ -136,7 +140,7 @@ curl -N -s -X POST "https://agent.tinyfish.ai/v1/automation/run-sse" \
 ```bash
 # Don't do this - less reliable and slower
 curl -N -s -X POST "https://agent.tinyfish.ai/v1/automation/run-sse" \
-  -H "X-API-Key: $MINO_API_KEY" \
+  -H "X-API-Key: $TINYFISH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://pizzahut.com",
