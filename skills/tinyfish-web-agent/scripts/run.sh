@@ -90,7 +90,7 @@ fi
 
 if [ "$ASYNC" = true ]; then
   echo "Running (streaming)..." >&2
-  exec curl -N -s -X POST "https://agent.tinyfish.ai/v1/automation/run-sse" \
+  exec curl -N -sS --fail-with-body -X POST "https://agent.tinyfish.ai/v1/automation/run-sse" \
     -H "X-API-Key: ${TINYFISH_API_KEY}" \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD"
@@ -119,14 +119,18 @@ if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
   exit 1
 fi
 
-STATUS=$(echo "$HTTP_BODY" | jq -r '.status // empty')
+if ! STATUS=$(printf '%s' "$HTTP_BODY" | jq -er '.status' 2>/dev/null); then
+  echo "Error: Response was not valid JSON with a status field" >&2
+  echo "$HTTP_BODY" >&2
+  exit 1
+fi
 
 if [ "$STATUS" = "COMPLETED" ]; then
-  echo "$HTTP_BODY" | jq '.result'
+  printf '%s' "$HTTP_BODY" | jq '.result'
   exit 0
 elif [ "$STATUS" = "FAILED" ]; then
   echo "Error: Task failed" >&2
-  echo "$HTTP_BODY" | jq '.error' >&2
+  printf '%s' "$HTTP_BODY" | jq '.error' >&2
   exit 1
 else
   echo "Error: Unexpected status: ${STATUS:-unknown}" >&2

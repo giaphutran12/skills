@@ -194,7 +194,7 @@ wait
 **Include sample values in your JSON schema.** This tells TinyFish the expected type and format for each field. Use realistic examples: `"$29.99"` not just `"string"`.
 
 **Use numbered steps for multi-step workflows.** Each step should be one clear action:
-```
+```text
 1. Click the Login button
 2. Enter username "testuser" and password "testpass"
 3. Navigate to Settings > Billing
