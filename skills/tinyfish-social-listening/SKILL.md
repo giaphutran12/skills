@@ -71,9 +71,14 @@ npm run listen -- --hours=24 --sentiment > reports/tinyfish-social-listening-$(d
 
 - Include every discovered item whose author is not an official TinyFish account.
 - Include posts and comments/replies.
+- Treat TinyFish Search as URL discovery only. A Search title/snippet is not proof that the actual post mentions TinyFish.
+- For X/LinkedIn, TinyFish Fetch must confirm the fetched page title/body mentions TinyFish before an item can be counted as verified.
+- If Fetch returns a readable page but the fetched title/body does not mention TinyFish, treat the Search hit as a false positive.
+- If Fetch returns a blocked/login/JavaScript shell, keep Search-matched items under `Needs verification`; do not count them as verified.
+- For X status URLs, decode the status ID timestamp when Fetch cannot expose `published_date`; still require Agent/browser verification for blocked content.
 - X results must resolve to status URLs; profile/search pages are treated as discovery noise.
 - Last 24 hours is strict when source timestamp is available.
-- If X/LinkedIn only expose search-snippet results without exact timestamps, keep them under `Needs time verification`; do not pretend they are proven last-24-hour items.
+- If X/LinkedIn only expose search-snippet results without exact content or timestamps, keep them under `Needs verification`; do not pretend they are proven last-24-hour items.
 - If Agent fallback runs, include the exact fallback reason in the report.
 - Report source failures and blocked pages explicitly.
 - Do not summarize away items. Sentiment buckets are optional grouping only.
@@ -83,7 +88,9 @@ npm run listen -- --hours=24 --sentiment > reports/tinyfish-social-listening-$(d
 Default exclusions:
 
 - X: `@Tiny_Fish`, `x.com/Tiny_Fish`
+- X operator/insider: `@sudheenair`
 - LinkedIn: `linkedin.com/company/tinyfish-ai`
+- LinkedIn operator/insider: `Sudheesh Nair`, `linkedin.com/in/sudheenair`, `linkedin.com/posts/sudheenair_`
 - Reddit/HN: no known official account by default
 
 Override or add exclusions:

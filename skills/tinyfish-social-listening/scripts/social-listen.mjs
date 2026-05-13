@@ -16,13 +16,20 @@ const DEFAULT_MENTIONS = [
 const DEFAULT_EXCLUDED_AUTHORS = new Set([
   "tiny_fish",
   "@tiny_fish",
+  "sudheenair",
+  "@sudheenair",
+  "sudheesh nair",
 ]);
 
 const DEFAULT_EXCLUDED_URL_SUBSTRINGS = [
   "x.com/Tiny_Fish",
   "twitter.com/Tiny_Fish",
+  "x.com/sudheenair",
+  "twitter.com/sudheenair",
   "linkedin.com/company/tinyfish-ai",
   "linkedin.com/posts/tinyfish-ai_",
+  "linkedin.com/in/sudheenair",
+  "linkedin.com/posts/sudheenair_",
 ];
 
 const DEFAULT_EXCLUDED_TEXT_PHRASES = [
@@ -144,6 +151,7 @@ if (!apiKey) {
 const state = {
   items: [],
   needsTimeVerification: [],
+  falsePositives: [],
   errors: [],
   fallbackRuns: [],
   platformStats: new Map(),
@@ -343,8 +351,9 @@ async function collectTinyFishSearchPlatform(platform, queries, config) {
             platform,
             type: "post",
             author: inferAuthor(platform, result.url),
-            title: result.title ?? "",
-            text: result.snippet ?? "",
+            title: "",
+            text: "",
+            search_title: result.title ?? "",
             search_snippet: result.snippet ?? "",
             url: result.url,
             published_at: null,
@@ -368,11 +377,29 @@ async function collectTinyFishSearchPlatform(platform, queries, config) {
   await enrichWithTinyFishFetch(platform, toFetch, config, stats);
 
   for (const item of toFetch) {
-    if (!containsMention(`${item.title}\n${item.text}\n${item.search_snippet ?? ""}`, config.mentions)) continue;
+    const fetchedText = `${item.title ?? ""}\n${item.text ?? ""}`;
+    const searchText = `${item.search_title ?? ""}\n${item.search_snippet ?? ""}`;
+    const fetchedHasMention = containsMention(fetchedText, config.mentions);
+    const searchHasMention = containsMention(searchText, config.mentions);
+    if (!fetchedHasMention && !searchHasMention) continue;
+
+    if (!fetchedHasMention && searchHasMention && fetchedContentIsReadable(item)) {
+      if (addFalsePositive(item, "Search result mentioned TinyFish, but fetched page body/title did not.", config)) {
+        stats.falsePositive += 1;
+      }
+      continue;
+    }
+
+    if (!fetchedHasMention) {
+      item.title ||= item.search_title ?? "";
+      item.text ||= item.search_snippet ?? "";
+      item.verification_note = "Search snippet/title mentioned TinyFish, but Fetch could not read matching page content.";
+    }
+
     const publishedAt = item.published_at ? new Date(item.published_at) : null;
-    if (publishedAt && isWithinWindow(publishedAt, config.since, config.now)) {
+    if (fetchedHasMention && publishedAt && isWithinWindow(publishedAt, config.since, config.now)) {
       if (addItem(item, config)) stats.verified += 1;
-    } else if (!publishedAt) {
+    } else if (!publishedAt || !fetchedHasMention) {
       if (addNeedsTimeVerification(item, config)) stats.needsTime += 1;
     } else {
       stats.outsideWindow += 1;
@@ -405,11 +432,16 @@ async function enrichWithTinyFishFetch(platform, items, config, stats) {
         const item = byUrl.get(result.url) ?? byUrl.get(result.final_url);
         if (!item) continue;
         stats.fetchSuccess += 1;
+        item.fetch_status = "success";
         item.final_url = result.final_url ?? result.url;
         item.title = result.title || item.title;
         item.text = trimText(result.text || item.text, 2000);
         item.author = result.author || item.author;
         item.published_at = normalizeDateString(result.published_date);
+        if (!item.published_at && platform === "x") {
+          item.published_at = publishedAtFromXStatusId(item.url);
+          if (item.published_at) item.timestamp_source = "x_status_id";
+        }
         item.source = `${item.source}+tinyfish_fetch`;
       }
 
@@ -426,6 +458,24 @@ async function enrichWithTinyFishFetch(platform, items, config, stats) {
   }
 }
 
+function fetchedContentIsReadable(item) {
+  if (item.fetch_status !== "success") return false;
+  return !isBlockedOrShellPage(item.text);
+}
+
+function isBlockedOrShellPage(text) {
+  const lower = String(text ?? "").toLowerCase();
+  return [
+    "javascript is disabled",
+    "please enable javascript",
+    "login to continue",
+    "sign in to continue",
+    "captcha",
+    "access denied",
+    "unsupported browser",
+  ].some((phrase) => lower.includes(phrase));
+}
+
 function agentFallbackReasons(platform, config) {
   if (config.forceAgentFallback) return ["forced by --force-agent-fallback"];
   const stats = platformStats(platform);
@@ -439,7 +489,7 @@ function agentFallbackReasons(platform, config) {
     reasons.push("TinyFish Search found URLs but TinyFish Fetch extracted no successful pages");
   }
   if (stats.needsTime > 0) {
-    reasons.push("TinyFish Search/Fetch found result(s) without reliable timestamps");
+    reasons.push("TinyFish Search/Fetch found result(s) needing content or timestamp verification");
   }
   return reasons;
 }
@@ -452,7 +502,7 @@ async function collectAgentFallback(fallbackPlatforms, config) {
       url: xSearchUrl(config),
       goal: [
         "Search X for TinyFish mentions from the last 24 hours.",
-        "Exclude posts from @Tiny_Fish.",
+        "Exclude posts from @Tiny_Fish and @sudheenair.",
         "Extract every visible post and reply/comment mentioning TinyFish, tinyfish.ai, TinyFish Search, TinyFish Fetch, or TinyFish Agent.",
         "Return only JSON array items with: platform, type, author, title, text, url, published_at.",
         "If login, CAPTCHA, or access wall blocks results, return {\"error\":\"blocked\",\"reason\":\"...\"}.",
@@ -463,7 +513,7 @@ async function collectAgentFallback(fallbackPlatforms, config) {
       url: linkedInSearchUrl(config),
       goal: [
         "Search LinkedIn content for TinyFish mentions from the last 24 hours.",
-        "Exclude posts from the official TinyFish company page.",
+        "Exclude posts from the official TinyFish company page and Sudheesh Nair/sudheenair.",
         "Extract every visible post and comment mentioning TinyFish, tinyfish.ai, TinyFish Search, TinyFish Fetch, or TinyFish Agent.",
         "Return only JSON array items with: platform, type, author, title, text, url, published_at.",
         "If login, CAPTCHA, or access wall blocks results, return {\"error\":\"blocked\",\"reason\":\"...\"}.",
@@ -589,24 +639,26 @@ function parseJsonFromText(text) {
 
 function buildXQueries(config) {
   const date = ymd(config.since);
+  const exclusions = "-site:x.com/Tiny_Fish -site:x.com/sudheenair";
   return [
-    `"TinyFish" site:x.com -site:x.com/Tiny_Fish after:${date}`,
-    `"tinyfish.ai" site:x.com -site:x.com/Tiny_Fish after:${date}`,
-    `"TinyFish Search" OR "TinyFish Fetch" site:x.com -site:x.com/Tiny_Fish after:${date}`,
+    `"TinyFish" site:x.com ${exclusions} after:${date}`,
+    `"tinyfish.ai" site:x.com ${exclusions} after:${date}`,
+    `"TinyFish Search" OR "TinyFish Fetch" site:x.com ${exclusions} after:${date}`,
   ];
 }
 
 function buildLinkedInQueries(config) {
   const date = ymd(config.since);
+  const exclusions = "-site:linkedin.com/company/tinyfish-ai -site:linkedin.com/posts/sudheenair_ -site:linkedin.com/in/sudheenair";
   return [
-    `"TinyFish" site:linkedin.com/posts -site:linkedin.com/company/tinyfish-ai after:${date}`,
-    `"tinyfish.ai" site:linkedin.com/posts -site:linkedin.com/company/tinyfish-ai after:${date}`,
-    `"TinyFish Search" OR "TinyFish Fetch" site:linkedin.com/posts -site:linkedin.com/company/tinyfish-ai after:${date}`,
+    `"TinyFish" site:linkedin.com/posts ${exclusions} after:${date}`,
+    `"tinyfish.ai" site:linkedin.com/posts ${exclusions} after:${date}`,
+    `"TinyFish Search" OR "TinyFish Fetch" site:linkedin.com/posts ${exclusions} after:${date}`,
   ];
 }
 
 function xSearchUrl(config) {
-  const query = encodeURIComponent(`("TinyFish" OR "tinyfish.ai" OR "TinyFish Search" OR "TinyFish Fetch") since:${ymd(config.since)} -from:Tiny_Fish`);
+  const query = encodeURIComponent(`("TinyFish" OR "tinyfish.ai" OR "TinyFish Search" OR "TinyFish Fetch") since:${ymd(config.since)} -from:Tiny_Fish -from:sudheenair`);
   return `https://x.com/search?q=${query}&src=typed_query&f=live`;
 }
 
@@ -632,6 +684,15 @@ function addNeedsTimeVerification(item, config) {
   return true;
 }
 
+function addFalsePositive(item, reason, config) {
+  if (isExcluded(item, config)) return false;
+  const normalized = normalizeItem(item, config.sentiment);
+  normalized.reason = reason;
+  if (state.falsePositives.some((existing) => itemKey(existing) === itemKey(normalized))) return false;
+  state.falsePositives.push(normalized);
+  return true;
+}
+
 function normalizeItem(item, includeSentiment) {
   const normalized = {
     platform: item.platform,
@@ -646,9 +707,12 @@ function normalizeItem(item, includeSentiment) {
   if (item.score != null) normalized.score = item.score;
   if (item.community) normalized.community = item.community;
   if (item.search_query) normalized.search_query = item.search_query;
+  if (item.search_title) normalized.search_title = item.search_title;
   if (item.search_snippet) normalized.search_snippet = item.search_snippet;
   if (item.search_position) normalized.search_position = item.search_position;
   if (item.site_name) normalized.site_name = item.site_name;
+  if (item.timestamp_source) normalized.timestamp_source = item.timestamp_source;
+  if (item.verification_note) normalized.verification_note = item.verification_note;
   if (includeSentiment) normalized.sentiment = classifySentiment(`${normalized.title}\n${normalized.text}`);
   return normalized;
 }
@@ -662,6 +726,7 @@ function buildResult(config) {
 
   state.items.sort(byPublishedAt);
   state.needsTimeVerification.sort((a, b) => a.platform.localeCompare(b.platform) || a.title.localeCompare(b.title));
+  state.falsePositives.sort((a, b) => a.platform.localeCompare(b.platform) || a.title.localeCompare(b.title));
 
   return {
     generated_at: config.now.toISOString(),
@@ -672,7 +737,9 @@ function buildResult(config) {
     },
     counts: {
       verified_items: state.items.length,
+      needs_verification: state.needsTimeVerification.length,
       needs_time_verification: state.needsTimeVerification.length,
+      false_positives: state.falsePositives.length,
       agent_fallback_runs: state.fallbackRuns.length,
       errors: state.errors.length,
     },
@@ -687,6 +754,7 @@ function buildResult(config) {
     ],
     items: state.items,
     needs_time_verification: state.needsTimeVerification,
+    false_positives: state.falsePositives,
     agent_fallback_runs: state.fallbackRuns,
     platform_stats: Object.fromEntries(state.platformStats),
     sentiment: config.sentiment ? groupBySentiment(state.items) : undefined,
@@ -702,7 +770,8 @@ function renderMarkdown(result) {
   lines.push(`Generated: ${result.generated_at}`);
   lines.push(`Window: ${result.window.since} to ${result.window.until}`);
   lines.push(`Verified items: ${result.counts.verified_items}`);
-  lines.push(`Needs time verification: ${result.counts.needs_time_verification}`);
+  lines.push(`Needs verification: ${result.counts.needs_verification}`);
+  lines.push(`False positives: ${result.counts.false_positives}`);
   lines.push(`Agent fallback runs: ${result.counts.agent_fallback_runs}`);
   lines.push(`Errors: ${result.counts.errors}`);
   lines.push("");
@@ -735,13 +804,13 @@ function renderMarkdown(result) {
   }
 
   lines.push("");
-  lines.push("## Needs Time Verification");
+  lines.push("## Needs Verification");
   if (!result.needs_time_verification.length) {
     lines.push("");
     lines.push("None.");
   } else {
     lines.push("");
-    lines.push("These matched the mention query, but the source did not expose a reliable timestamp.");
+    lines.push("These matched the mention query, but Search/Fetch could not fully verify content or timestamp.");
     renderItems(lines, result.needs_time_verification);
   }
 
@@ -751,6 +820,14 @@ function renderMarkdown(result) {
     for (const error of result.errors) {
       lines.push(`- ${error.platform}: ${error.message}`);
     }
+  }
+
+  if (result.false_positives.length) {
+    lines.push("");
+    lines.push("## False Positives");
+    lines.push("");
+    lines.push("Search found these URLs, but Fetch showed the actual page did not mention TinyFish.");
+    renderItems(lines, result.false_positives);
   }
 
   if (result.debug?.length) {
@@ -938,6 +1015,20 @@ function normalizeDateString(value) {
   return date.toISOString();
 }
 
+function publishedAtFromXStatusId(url) {
+  const match = String(url ?? "").match(/\/status\/(\d+)/);
+  if (!match) return null;
+
+  try {
+    const twitterEpochMs = 1288834974657n;
+    const timestampMs = Number((BigInt(match[1]) >> 22n) + twitterEpochMs);
+    const date = new Date(timestampMs);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  } catch {
+    return null;
+  }
+}
+
 function stripHtml(value) {
   return String(value)
     .replace(/<[^>]*>/g, " ")
@@ -1005,6 +1096,7 @@ function platformStats(platform) {
       fetchErrorCodes: {},
       verified: 0,
       needsTime: 0,
+      falsePositive: 0,
       outsideWindow: 0,
     });
   }
