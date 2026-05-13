@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node --check scripts/social-listen.mjs",
+    "test": "node scripts/social-listen.mjs --self-test",
     "listen": "node scripts/social-listen.mjs"
   },
   "engines": {

@@ -34,7 +34,13 @@ Default behavior:
 1. Run TinyFish Search for X/LinkedIn discovery.
 2. Run TinyFish Fetch on discovered X/LinkedIn URLs.
 3. Run public Reddit/HN APIs for posts and comments.
-4. Run TinyFish Agent only if Search/Fetch produce blocked, failed, or timestamp-incomplete X/LinkedIn evidence.
+4. Report coverage gaps when Search/Fetch cannot verify content, comments, or timestamps.
+
+Run the local self-test:
+
+```bash
+npm test
+```
 
 JSON output:
 
@@ -42,23 +48,31 @@ JSON output:
 npm run listen -- --hours=24 --sentiment --json
 ```
 
-Disable Agent fallback and force Search/Fetch-only mode:
+Enable Agent fallback after credits/auth are available:
 
 ```bash
-npm run listen -- --hours=24 --sentiment --no-agent-fallback
+npm run listen -- --hours=24 --sentiment --agent-fallback
 ```
 
 Use authenticated Agent fallback with TinyFish Vault credentials:
 
 ```bash
-npm run listen -- --hours=24 --sentiment --use-vault --linkedin-credential-item-id=cred:...:item-linkedin
+npm run listen -- --hours=24 --sentiment --agent-fallback --use-vault --linkedin-credential-item-id=cred:...:item-linkedin
 ```
 
 If one credential should be available to every Agent fallback platform:
 
 ```bash
-npm run listen -- --hours=24 --sentiment --use-vault --credential-item-id=cred:...:item-shared
+npm run listen -- --hours=24 --sentiment --agent-fallback --use-vault --credential-item-id=cred:...:item-shared
 ```
+
+For deeper Search pagination, throttle Search to avoid rate limits:
+
+```bash
+npm run listen -- --hours=24 --sentiment --max-pages=10 --search-delay-ms=12500
+```
+
+Conservative defaults stay within the lower public free-plan limits seen on TinyFish pricing/blog pages: Search `5 req/min` and Fetch `25 url/min`. If your account has higher limits from the API reference or a paid plan, lower `--search-delay-ms` / `--fetch-delay-ms` or increase `--fetch-batch-size`.
 
 Save a report:
 
@@ -74,12 +88,15 @@ npm run listen -- --hours=24 --sentiment > reports/tinyfish-social-listening-$(d
 - Treat TinyFish Search as URL discovery only. A Search title/snippet is not proof that the actual post mentions TinyFish.
 - For X/LinkedIn, TinyFish Fetch must confirm the fetched page title/body mentions TinyFish before an item can be counted as verified.
 - If Fetch returns a readable page but the fetched title/body does not mention TinyFish, treat the Search hit as a false positive.
-- If Fetch returns a blocked/login/JavaScript shell, keep Search-matched items under `Needs verification`; do not count them as verified.
+- If Fetch returns a blocked/login/JavaScript shell, keep Search-matched items under `Needs verification` with `verification_type: content`; do not count them as verified.
 - For X status URLs, decode the status ID timestamp when Fetch cannot expose `published_date`; still require Agent/browser verification for blocked content.
 - X results must resolve to status URLs; profile/search pages are treated as discovery noise.
 - Last 24 hours is strict when source timestamp is available.
 - If X/LinkedIn only expose search-snippet results without exact content or timestamps, keep them under `Needs verification`; do not pretend they are proven last-24-hour items.
+- Keep `needs_time_verification` only for items whose timestamp cannot be proven. Do not put X snowflake-decoded timestamps there.
 - If Agent fallback runs, include the exact fallback reason in the report.
+- If Agent fallback is disabled or unavailable, include the exact coverage gap in the report.
+- In Search+Fetch-only mode, always report that X/LinkedIn comments and logged-in content are not fully enumerable until Agent/browser verification is available.
 - Report source failures and blocked pages explicitly.
 - Do not summarize away items. Sentiment buckets are optional grouping only.
 
@@ -118,13 +135,14 @@ Grounding from TinyFish docs:
 - TinyFish docs list four public surfaces: Agent, Search, Fetch, Browser; Search and Fetch are free, Agent and Browser use credits.
 - Search docs say Search is for ranked search results, snippets, and URLs.
 - Fetch docs say Fetch is for known URLs and clean extracted page content; Fetch renders pages in a real browser and returns extracted text.
+- Public TinyFish pricing/blog pages list lower free-plan limits than the current API reference, so the runner defaults to the conservative lower numbers to avoid surprise `429`s.
 - Agent docs say Agent is for natural-language goals where TinyFish decides browser actions, especially multi-step workflows.
 - Vault docs say Agent runs can use `use_vault: true` and `credential_item_ids` from `GET /v1/vault/items`; scoped credential IDs prevent the wrong login when multiple accounts exist on one domain.
 
 Operational strategy:
 
 - X and LinkedIn: Search first for discovery, then Fetch every discovered URL for content/timestamps.
-- Agent fallback: only for X/LinkedIn when Search/Fetch hits `bot_blocked`, `timeout`, `empty_content`, other fetch failures, search API failures, or timestamp-incomplete results that may hide comments/replies.
+- Agent fallback: opt-in via `--agent-fallback` for X/LinkedIn when Search/Fetch hits `bot_blocked`, `timeout`, `empty_content`, other fetch failures, search API failures, or timestamp/content-incomplete results that may hide comments/replies.
 - Authenticated Agent fallback: use `--use-vault` plus platform-specific `--linkedin-credential-item-id=...` or `--x-credential-item-id=...` when public Search/Fetch cannot see logged-in comments/posts.
 - Reddit: public Reddit JSON search for posts/comments, then thread JSON for comments.
 - Hacker News: Algolia HN API by date for stories and comments.
