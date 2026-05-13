@@ -51,7 +51,13 @@ npm run listen -- --hours=24 --sentiment --json
 Enable Agent fallback after credits/auth are available:
 
 ```bash
-npm run listen -- --hours=24 --sentiment --agent-fallback
+npm run listen -- --hours=24 --sentiment --agent-fallback --max-agent-runs=2
+```
+
+Default Agent fallback is targeted: it opens exact unresolved X/LinkedIn URLs from Search+Fetch and tries to verify content or timestamps. If Search/Fetch fails before producing exact URLs, it can run one capped `search_recovery` job. It does not run broad social search otherwise unless explicitly requested:
+
+```bash
+npm run listen -- --hours=24 --sentiment --agent-fallback --agent-search-fallback --max-agent-runs=2
 ```
 
 Use authenticated Agent fallback with TinyFish Vault credentials:
@@ -91,10 +97,11 @@ npm run listen -- --hours=24 --sentiment > reports/tinyfish-social-listening-$(d
 - If Fetch returns a blocked/login/JavaScript shell, keep Search-matched items under `Needs verification` with `verification_type: content`; do not count them as verified.
 - For X status URLs, decode the status ID timestamp when Fetch cannot expose `published_date`; still require Agent/browser verification for blocked content.
 - X results must resolve to status URLs; profile/search pages are treated as discovery noise.
+- X/Twitter status URLs are deduped by status ID so legacy `twitter.com` and current `x.com` hosts do not double-count one post.
 - Last 24 hours is strict when source timestamp is available.
 - If X/LinkedIn only expose search-snippet results without exact content or timestamps, keep them under `Needs verification`; do not pretend they are proven last-24-hour items.
 - Keep `needs_time_verification` only for items whose timestamp cannot be proven. Do not put X snowflake-decoded timestamps there.
-- If Agent fallback runs, include the exact fallback reason in the report.
+- If Agent fallback runs, include the exact fallback reason, target URL, mode, run ID, status, and step count when the API returns it.
 - If Agent fallback is disabled or unavailable, include the exact coverage gap in the report.
 - In Search+Fetch-only mode, always report that X/LinkedIn comments and logged-in content are not fully enumerable until Agent/browser verification is available.
 - Report source failures and blocked pages explicitly.
@@ -144,10 +151,19 @@ Operational strategy:
 
 - X and LinkedIn: Search first for discovery, then Fetch every discovered URL for content/timestamps.
 - Agent fallback: opt-in via `--agent-fallback` for X/LinkedIn when Search/Fetch hits `bot_blocked`, `timeout`, `empty_content`, other fetch failures, search API failures, or timestamp/content-incomplete results that may hide comments/replies.
+- Default Agent fallback verifies exact unresolved URLs first and is capped by `--max-agent-runs` to avoid burning steps. If Search/Fetch fails before producing exact URLs, it can run a capped `search_recovery` job. Broad Agent search is otherwise behind `--agent-search-fallback` or `--force-agent-fallback`.
 - Authenticated Agent fallback: use `--use-vault` plus platform-specific `--linkedin-credential-item-id=...` or `--x-credential-item-id=...` when public Search/Fetch cannot see logged-in comments/posts.
 - Reddit: public Reddit JSON search for posts/comments, then thread JSON for comments.
 - Hacker News: Algolia HN API by date for stories and comments.
 - Browser API is not used.
+
+## Known Search/Fetch/Agent Gaps
+
+- Search snippets can mention TinyFish because of sidebars, author bios, or adjacent comments; readable Fetch body/title is the source of truth for verified items.
+- Fetch can return X or LinkedIn JavaScript/login shells. Agent can open the exact URL to verify visible content, but without Vault it may still hit login, CAPTCHA, or access walls.
+- LinkedIn logged-in comments and private/limited-visibility posts are not fully provable with public Search+Fetch. Vault credentials should help later by letting Agent use the right LinkedIn account.
+- X replies and LinkedIn comments are not exhaustively enumerable unless Agent can access the live page. Keep these as coverage gaps when Agent is disabled, capped, blocked, or unauthenticated.
+- Agent endpoint failures seen during testing: `403` when `output_schema` was not enabled, `403` when credits were empty, and `429 RATE_LIMIT_EXCEEDED` when stale pending runs exceeded the active-run limit. These are source failures, not verified mentions.
 
 ## Cron
 

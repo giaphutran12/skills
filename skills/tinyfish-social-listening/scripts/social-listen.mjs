@@ -139,8 +139,11 @@ const options = {
   maxFetchUrls: Number(args["max-fetch"] ?? 40),
   fetchBatchSize: Number(args["fetch-batch-size"] ?? 5),
   fetchDelayMs: Number(args["fetch-delay-ms"] ?? 12_500),
+  maxAgentRuns: Number(args["max-agent-runs"] ?? 2),
   includeUnknownTime: Boolean(args["include-unknown-time"]),
   agentFallback: wantsAgentFallback && !Boolean(args["no-agent-fallback"]),
+  agentSearchFallback: Boolean(args["agent-search-fallback"]) || Boolean(args["force-agent-fallback"]),
+  agentCheckFalsePositives: Boolean(args["agent-check-false-positives"]),
   forceAgentFallback: Boolean(args["force-agent-fallback"]),
   useVault: Boolean(args["use-vault"]) || Boolean(credentialIds.x.length || credentialIds.linkedin.length || sharedCredentialIds.length),
   credentialIds: {
@@ -174,6 +177,10 @@ if (!Number.isFinite(options.searchDelayMs) || options.searchDelayMs < 0) {
 
 if (!Number.isFinite(options.fetchDelayMs) || options.fetchDelayMs < 0) {
   fail("--fetch-delay-ms must be a non-negative number");
+}
+
+if (!Number.isInteger(options.maxAgentRuns) || options.maxAgentRuns < 0) {
+  fail("--max-agent-runs must be a non-negative integer");
 }
 
 const apiKey = loadTinyFishApiKey();
@@ -559,44 +566,29 @@ function agentFallbackReasons(platform, config) {
   if (stats.needsVerification > 0) {
     reasons.push("TinyFish Search/Fetch found result(s) needing content verification");
   }
+  if (config.agentCheckFalsePositives && stats.falsePositive > 0) {
+    reasons.push("false positives may hide logged-in comments");
+  }
   return reasons;
 }
 
 async function collectAgentFallback(fallbackPlatforms, config) {
-  const requested = new Map(fallbackPlatforms.map((entry) => [entry.platform, entry.reasons]));
-  const agentJobs = [
-    {
-      platform: "x",
-      url: xSearchUrl(config),
-      goal: [
-        "Search X for TinyFish mentions from the last 24 hours.",
-        "Exclude posts from @Tiny_Fish and @sudheenair.",
-        "Extract every visible post and reply/comment mentioning TinyFish, tinyfish.ai, TinyFish Search, TinyFish Fetch, or TinyFish Agent.",
-        "Return only JSON array items with: platform, type, author, title, text, url, published_at.",
-        "If login, CAPTCHA, or access wall blocks results, return {\"error\":\"blocked\",\"reason\":\"...\"}.",
-      ].join(" "),
-    },
-    {
-      platform: "linkedin",
-      url: linkedInSearchUrl(config),
-      goal: [
-        "Search LinkedIn content for TinyFish mentions from the last 24 hours.",
-        "Exclude posts from the official TinyFish company page and Sudheesh Nair/sudheenair.",
-        "Extract every visible post and comment mentioning TinyFish, tinyfish.ai, TinyFish Search, TinyFish Fetch, or TinyFish Agent.",
-        "Return only JSON array items with: platform, type, author, title, text, url, published_at.",
-        "If login, CAPTCHA, or access wall blocks results, return {\"error\":\"blocked\",\"reason\":\"...\"}.",
-      ].join(" "),
-    },
-  ].filter((job) => requested.has(job.platform));
+  const { jobs: agentJobs, skipped } = buildAgentFallbackJobs(fallbackPlatforms, config);
+  if (skipped > 0) {
+    recordCoverageGap("agent", `${skipped} Agent fallback job(s) skipped because --max-agent-runs=${config.maxAgentRuns}.`);
+  }
 
   for (const job of agentJobs) {
-    state.fallbackRuns.push({
+    const fallbackRun = {
       platform: job.platform,
       endpoint: "https://agent.tinyfish.ai/v1/automation/run",
-      reasons: requested.get(job.platform),
+      mode: job.mode,
+      target_url: job.url,
+      reasons: job.reasons,
       use_vault: config.useVault,
       credential_item_ids: config.credentialIds[job.platform]?.length ?? 0,
-    });
+    };
+    state.fallbackRuns.push(fallbackRun);
 
     try {
       const body = {
@@ -620,10 +612,19 @@ async function collectAgentFallback(fallbackPlatforms, config) {
         },
         body: JSON.stringify(body),
       });
+      fallbackRun.run_id = data?.run_id ?? data?.id ?? null;
+      fallbackRun.run_url = data?.run_url ?? null;
+      fallbackRun.status = data?.status ?? null;
+      fallbackRun.num_of_steps = data?.num_of_steps ?? null;
+      fallbackRun.error = data?.error?.code ?? data?.error ?? null;
 
       const parsed = parseAgentItems(data);
       if (parsed.error) {
         recordError(job.platform, `TinyFish Agent fallback blocked/failed: ${parsed.reason ?? parsed.error}`);
+        continue;
+      }
+      if (!parsed.length) {
+        recordCoverageGap(job.platform, `TinyFish Agent fallback returned no parseable items for ${job.url}.`);
         continue;
       }
 
@@ -653,10 +654,153 @@ async function collectAgentFallback(fallbackPlatforms, config) {
   }
 }
 
+function buildAgentFallbackJobs(fallbackPlatforms, config) {
+  return agentFallbackJobsFromItems(fallbackPlatforms, config, [...state.needsVerification, ...state.needsTimeVerification], state.falsePositives);
+}
+
+function agentFallbackJobsFromItems(fallbackPlatforms, config, unresolvedItems, falsePositiveItems = []) {
+  const requested = new Map(fallbackPlatforms.map((entry) => [entry.platform, entry.reasons]));
+  const candidates = [];
+  for (const item of unresolvedItems) {
+    if (!requested.has(item.platform)) continue;
+    candidates.push({
+      platform: item.platform,
+      mode: item.verification_type === "timestamp" ? "verify_timestamp" : "verify_content",
+      url: item.url,
+      reasons: requested.get(item.platform),
+      goal: targetedAgentGoal(item.platform),
+      search_position: item.search_position ?? Number.MAX_SAFE_INTEGER,
+    });
+  }
+
+  if (config.agentCheckFalsePositives) {
+    for (const item of falsePositiveItems) {
+      if (!requested.has(item.platform)) continue;
+      candidates.push({
+        platform: item.platform,
+        mode: "targeted_false_positive_check",
+        url: item.url,
+        reasons: [...requested.get(item.platform), "false positive may hide logged-in comments"],
+        goal: targetedAgentGoal(item.platform),
+        search_position: item.search_position ?? Number.MAX_SAFE_INTEGER,
+      });
+    }
+  }
+
+  if (config.agentSearchFallback) {
+    if (requested.has("x")) {
+      candidates.push({
+        platform: "x",
+        mode: "search",
+        url: xSearchUrl(config),
+        reasons: requested.get("x"),
+        goal: searchAgentGoal("x"),
+      });
+    }
+    if (requested.has("linkedin")) {
+      candidates.push({
+        platform: "linkedin",
+        mode: "search",
+        url: linkedInSearchUrl(config),
+        reasons: requested.get("linkedin"),
+        goal: searchAgentGoal("linkedin"),
+      });
+    }
+  }
+
+  for (const entry of fallbackPlatforms) {
+    if (candidates.some((job) => job.platform === entry.platform)) continue;
+    if (!needsSearchRecovery(entry.reasons)) continue;
+    candidates.push({
+      platform: entry.platform,
+      mode: "search_recovery",
+      url: entry.platform === "x" ? xSearchUrl(config) : linkedInSearchUrl(config),
+      reasons: entry.reasons,
+      goal: searchAgentGoal(entry.platform),
+    });
+  }
+
+  const deduped = dedupeAgentJobs(candidates).sort(compareAgentJobs);
+  return {
+    jobs: deduped.slice(0, config.maxAgentRuns),
+    skipped: Math.max(0, deduped.length - config.maxAgentRuns),
+  };
+}
+
+function needsSearchRecovery(reasons) {
+  return reasons.some((reason) => /Search failed|Fetch returned failed|Fetch extracted no successful pages/i.test(reason));
+}
+
+function compareAgentJobs(a, b) {
+  return agentJobPriority(a) - agentJobPriority(b)
+    || Number(a.search_position ?? Number.MAX_SAFE_INTEGER) - Number(b.search_position ?? Number.MAX_SAFE_INTEGER)
+    || a.platform.localeCompare(b.platform)
+    || a.url.localeCompare(b.url);
+}
+
+function agentJobPriority(job) {
+  if (job.mode === "verify_content" && job.platform === "x") return 0;
+  if (job.mode === "verify_content") return 1;
+  if (job.mode === "verify_timestamp") return 2;
+  if (job.mode === "targeted_false_positive_check") return 3;
+  if (job.mode === "search_recovery") return 4;
+  return 4;
+}
+
+function targetedAgentGoal(platform) {
+  const common = [
+    "Open this exact URL.",
+    "Extract the visible post and visible replies/comments that mention TinyFish, tinyfish.ai, TinyFish Search, TinyFish Fetch, or TinyFish Agent.",
+    "Exclude official/operator authors @Tiny_Fish, TinyFish company page, Sudheesh Nair, and sudheenair.",
+    "Return only JSON array items with: platform, type, author, title, text, url, published_at.",
+    "If login, CAPTCHA, or access wall blocks results, return {\"error\":\"blocked\",\"reason\":\"...\"}.",
+  ];
+  if (platform === "linkedin") {
+    common.splice(1, 0, "Treat comments as in-scope, but only return comments that visibly mention TinyFish.");
+  }
+  return common.join(" ");
+}
+
+function searchAgentGoal(platform) {
+  if (platform === "x") {
+    return [
+      "Search X for TinyFish mentions from the last 24 hours.",
+      "Exclude posts from @Tiny_Fish and @sudheenair.",
+      "Extract every visible post and reply/comment mentioning TinyFish, tinyfish.ai, TinyFish Search, TinyFish Fetch, or TinyFish Agent.",
+      "Return only JSON array items with: platform, type, author, title, text, url, published_at.",
+      "If login, CAPTCHA, or access wall blocks results, return {\"error\":\"blocked\",\"reason\":\"...\"}.",
+    ].join(" ");
+  }
+
+  return [
+    "Search LinkedIn content for TinyFish mentions from the last 24 hours.",
+    "Exclude posts from the official TinyFish company page and Sudheesh Nair/sudheenair.",
+    "Extract every visible post and comment mentioning TinyFish, tinyfish.ai, TinyFish Search, TinyFish Fetch, or TinyFish Agent.",
+    "Return only JSON array items with: platform, type, author, title, text, url, published_at.",
+    "If login, CAPTCHA, or access wall blocks results, return {\"error\":\"blocked\",\"reason\":\"...\"}.",
+  ].join(" ");
+}
+
+function dedupeAgentJobs(jobs) {
+  const seen = new Set();
+  const output = [];
+  for (const job of jobs) {
+    const key = `${job.platform}:${job.mode}:${canonicalItemUrl(job.url) || job.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(job);
+  }
+  return output;
+}
+
 function parseAgentItems(data) {
   const candidates = [
+    data?.result?.response,
+    data?.result?.result,
+    data?.result?.items,
     data?.result_json,
     data?.result,
+    data?.response,
     data?.output,
     data?.data,
     data,
@@ -744,6 +888,7 @@ function addItem(item, config) {
   const normalized = normalizeItem(item, config.sentiment);
   if (state.items.some((existing) => itemKey(existing) === itemKey(normalized))) return false;
   state.items.push(normalized);
+  removePendingVerification(normalized);
   return true;
 }
 
@@ -772,6 +917,12 @@ function addFalsePositive(item, reason, config) {
   if (state.falsePositives.some((existing) => itemKey(existing) === itemKey(normalized))) return false;
   state.falsePositives.push(normalized);
   return true;
+}
+
+function removePendingVerification(item) {
+  const key = itemKey(item);
+  state.needsVerification = state.needsVerification.filter((existing) => itemKey(existing) !== key);
+  state.needsTimeVerification = state.needsTimeVerification.filter((existing) => itemKey(existing) !== key);
 }
 
 function normalizeItem(item, includeSentiment) {
@@ -870,7 +1021,15 @@ function renderMarkdown(result) {
   if (result.agent_fallback_runs.length) {
     lines.push("## Agent Fallback");
     for (const run of result.agent_fallback_runs) {
-      lines.push(`- ${run.platform}: ${run.reasons.join("; ")}`);
+      const parts = [
+        run.platform,
+        run.mode,
+        run.status ? `status=${run.status}` : null,
+        run.num_of_steps != null ? `steps=${run.num_of_steps}` : null,
+        run.run_id ? `run_id=${run.run_id}` : null,
+        run.target_url ? `url=${run.target_url}` : null,
+      ].filter(Boolean);
+      lines.push(`- ${parts.join(" ")}: ${run.reasons.join("; ")}`);
     }
     lines.push("");
   }
@@ -1211,8 +1370,24 @@ function trimText(value, maxLength) {
 }
 
 function itemKey(item) {
-  const base = item.url || `${item.platform}:${item.author}:${item.title}:${item.text}`;
+  const base = canonicalItemUrl(item.url) || `${item.platform}:${item.author}:${item.title}:${item.text}`;
   return String(base).toLowerCase().replace(/[?#].*$/, "");
+}
+
+function canonicalItemUrl(url) {
+  if (!url) return "";
+  if (isXStatusUrl(url)) {
+    const match = String(url).match(/\/status\/(\d+)/);
+    if (match) return `x-status:${match[1]}`;
+  }
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    parsed.search = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return String(url).replace(/[?#].*$/, "");
+  }
 }
 
 function dedupeRaw(items) {
@@ -1324,6 +1499,10 @@ function runSelfTest() {
   assert.equal(hoursBetween(new Date("2026-05-12T00:00:00Z"), new Date("2026-05-13T12:00:00Z")), 36);
   assert.equal(publishedAtFromXStatusId("https://x.com/AndAtzx/status/2054465213718528432"), "2026-05-13T07:34:11.725Z");
   assert.equal(isXStatusUrl("https://twitter.com/AndAtzx/status/2054465213718528432"), true);
+  assert.equal(
+    itemKey({ url: "https://twitter.com/AndAtzx/status/2054465213718528432?ref=search" }),
+    itemKey({ url: "https://x.com/AndAtzx/status/2054465213718528432" }),
+  );
   assert.equal(fetchedContentIsReadable({ fetch_status: "success", text: "Please enable JavaScript to continue using x.com." }), false);
   assert.equal(fetchedContentIsReadable({ fetch_status: "success", title: "", text: "" }), false);
   assert.equal(fetchedContentIsReadable({ fetch_status: "success", text: "TinyFish Search and Fetch APIs are free." }), true);
@@ -1335,6 +1514,64 @@ function runSelfTest() {
   assert.match(buildLinkedInQueries(queryConfig).join("\n"), /feed\/update/);
   assert.match(xSearchUrl(queryConfig), /TinyFish%20Agent/);
   assert.match(linkedInSearchUrl(queryConfig), /TinyFish%20Agent/);
+  const agentJobs = agentFallbackJobsFromItems(
+    [
+      { platform: "x", reasons: ["content gap"] },
+      { platform: "linkedin", reasons: ["timestamp gap"] },
+    ],
+    {
+      maxAgentRuns: 1,
+      agentSearchFallback: false,
+      agentCheckFalsePositives: false,
+      since: queryConfig.since,
+    },
+    [
+      { platform: "linkedin", url: "https://www.linkedin.com/posts/example", verification_type: "timestamp", search_position: 1 },
+      { platform: "x", url: "https://x.com/a/status/1", verification_type: "content", search_position: 10 },
+    ],
+  );
+  assert.equal(agentJobs.jobs.length, 1);
+  assert.equal(agentJobs.jobs[0].mode, "verify_content");
+  assert.equal(agentJobs.skipped, 1);
+  assert.equal(
+    agentFallbackJobsFromItems(
+      [{ platform: "linkedin", reasons: ["false positive check"] }],
+      {
+        maxAgentRuns: 1,
+        agentSearchFallback: false,
+        agentCheckFalsePositives: true,
+        since: queryConfig.since,
+      },
+      [],
+      [{ platform: "linkedin", url: "https://www.linkedin.com/posts/example", search_position: 1 }],
+    ).jobs[0].mode,
+    "targeted_false_positive_check",
+  );
+  assert.equal(
+    agentFallbackJobsFromItems(
+      [{ platform: "x", reasons: ["TinyFish Search failed for one or more queries"] }],
+      {
+        maxAgentRuns: 1,
+        agentSearchFallback: false,
+        agentCheckFalsePositives: false,
+        since: queryConfig.since,
+      },
+      [],
+    ).jobs[0].mode,
+    "search_recovery",
+  );
+  assert.equal(parseAgentItems({
+    result: {
+      result: [{
+        platform: "X",
+        type: "post",
+        author: "@AndAtzx",
+        text: "Try TinyFish for yourself.",
+        url: "https://x.com/AndAtzx/status/2054465213718528432",
+        published_at: "2026-05-13T07:34:11.725Z",
+      }],
+    },
+  }).length, 1);
   assert.equal(isExcluded({
     platform: "x",
     author: "sudheenair",
