@@ -105,6 +105,7 @@ npm run listen -- --hours=24 --sentiment > reports/tinyfish-social-listening-$(d
 Default exclusions:
 
 - X: `@Tiny_Fish`, `x.com/Tiny_Fish`
+- X legacy host: `twitter.com/Tiny_Fish`
 - X operator/insider: `@sudheenair`
 - LinkedIn: `linkedin.com/company/tinyfish-ai`
 - LinkedIn operator/insider: `Sudheesh Nair`, `linkedin.com/in/sudheenair`, `linkedin.com/posts/sudheenair_`

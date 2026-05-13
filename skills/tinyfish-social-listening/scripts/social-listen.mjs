@@ -708,12 +708,13 @@ function parseJsonFromText(text) {
 
 function buildXQueries(config) {
   const date = ymd(config.since);
-  const exclusions = "-site:x.com/Tiny_Fish -site:x.com/sudheenair";
+  const sites = "(site:x.com OR site:twitter.com)";
+  const exclusions = "-site:x.com/Tiny_Fish -site:twitter.com/Tiny_Fish -site:x.com/sudheenair -site:twitter.com/sudheenair";
   return [
-    `"TinyFish" site:x.com ${exclusions} after:${date}`,
-    `"tinyfish.ai" site:x.com ${exclusions} after:${date}`,
-    `"TinyFish Search" OR "TinyFish Fetch" site:x.com ${exclusions} after:${date}`,
-    `"TinyFish Agent" site:x.com ${exclusions} after:${date}`,
+    `"TinyFish" ${sites} ${exclusions} after:${date}`,
+    `"tinyfish.ai" ${sites} ${exclusions} after:${date}`,
+    `"TinyFish Search" OR "TinyFish Fetch" ${sites} ${exclusions} after:${date}`,
+    `"TinyFish Agent" ${sites} ${exclusions} after:${date}`,
   ];
 }
 
@@ -1328,6 +1329,8 @@ function runSelfTest() {
   assert.equal(fetchedContentIsReadable({ fetch_status: "success", text: "TinyFish Search and Fetch APIs are free." }), true);
   const queryConfig = { since: new Date("2026-05-12T00:00:00Z") };
   assert.match(buildXQueries(queryConfig).join("\n"), /TinyFish Agent/);
+  assert.match(buildXQueries(queryConfig).join("\n"), /site:twitter\.com/);
+  assert.match(buildXQueries(queryConfig).join("\n"), /-site:twitter\.com\/Tiny_Fish/);
   assert.match(buildLinkedInQueries(queryConfig).join("\n"), /TinyFish Agent/);
   assert.match(buildLinkedInQueries(queryConfig).join("\n"), /feed\/update/);
   assert.match(xSearchUrl(queryConfig), /TinyFish%20Agent/);
